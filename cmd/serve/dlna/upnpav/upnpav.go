@@ -51,6 +51,7 @@ type Object struct {
 	Genre       string    `xml:"upnp:genre,omitempty"`
 	AlbumArtURI string    `xml:"upnp:albumArtURI,omitempty"`
 	Searchable  int       `xml:"searchable,attr"`
+	WriteStatus string    `xml:"upnp:writeStatus,omitempty"`
 }
 
 // Timestamp wraps time.Time for formatting purposes
