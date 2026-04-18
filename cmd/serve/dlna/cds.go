@@ -42,12 +42,8 @@ func (cds *contentDirectoryService) cdsObjectToUpnpavObject(cdsObject object, fi
 	}
 
 	if fileInfo.IsDir() {
-		// Use different UPnP class for root container vs subdirectories for Samsung TV compatibility
-		if cdsObject.Path == "/" {
-			obj.Class = "object.container"
-		} else {
-			obj.Class = "object.container.storageFolder"
-		}
+		// Use consistent container class for Samsung TV compatibility
+		obj.Class = "object.container.storageFolder"
 		obj.Title = fileInfo.Name()
 		obj.Date = upnpav.Timestamp{Time: fileInfo.ModTime()}
 		childCount, err := cds.countChildren(cdsObject.Path)
