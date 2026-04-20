@@ -20,6 +20,7 @@ import (
 	_ "github.com/rclone/rclone/backend/drive"
 	_ "github.com/rclone/rclone/backend/dropbox"
 	_ "github.com/rclone/rclone/backend/fichier"
+	_ "github.com/rclone/rclone/backend/flyfile"
 	_ "github.com/rclone/rclone/backend/filefabric"
 	_ "github.com/rclone/rclone/backend/filelu"
 	_ "github.com/rclone/rclone/backend/filen"

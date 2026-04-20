@@ -1,0 +1,132 @@
+---
+# Build and release FlyFile rclone fork for all platforms
+name: flyfile-release
+
+on:
+  push:
+    branches: ['master', 'main']
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.goos }}/${{ matrix.goarch }}${{ matrix.goarm != '' && format('-ARMv{0}', matrix.goarm) || '' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ── Linux ──────────────────────────────────────────────────────────
+          - { goos: linux,   goarch: amd64   }
+          - { goos: linux,   goarch: arm64   }
+          - { goos: linux,   goarch: arm,    goarm: '7' }
+          - { goos: linux,   goarch: arm,    goarm: '6' }
+          - { goos: linux,   goarch: 386     }
+          - { goos: linux,   goarch: mips,   gomips: softfloat }
+          - { goos: linux,   goarch: mipsle, gomips: softfloat }
+          - { goos: linux,   goarch: mips64   }
+          - { goos: linux,   goarch: mips64le }
+          - { goos: linux,   goarch: s390x   }
+          - { goos: linux,   goarch: ppc64le }
+          - { goos: linux,   goarch: riscv64 }
+          # ── macOS ──────────────────────────────────────────────────────────
+          - { goos: darwin,  goarch: amd64  }
+          - { goos: darwin,  goarch: arm64  }
+          # ── Windows ────────────────────────────────────────────────────────
+          - { goos: windows, goarch: amd64  }
+          - { goos: windows, goarch: arm64  }
+          - { goos: windows, goarch: 386    }
+          # ── FreeBSD ────────────────────────────────────────────────────────
+          - { goos: freebsd, goarch: amd64  }
+          - { goos: freebsd, goarch: arm64  }
+          - { goos: freebsd, goarch: 386    }
+          - { goos: freebsd, goarch: arm,   goarm: '7' }
+          # ── OpenBSD ────────────────────────────────────────────────────────
+          - { goos: openbsd, goarch: amd64  }
+          - { goos: openbsd, goarch: arm64  }
+          - { goos: openbsd, goarch: 386    }
+          # ── NetBSD ─────────────────────────────────────────────────────────
+          - { goos: netbsd,  goarch: amd64  }
+          - { goos: netbsd,  goarch: arm64  }
+          - { goos: netbsd,  goarch: 386    }
+          # ── DragonFly BSD ──────────────────────────────────────────────────
+          - { goos: dragonfly, goarch: amd64 }
+          # ── Solaris / Illumos ──────────────────────────────────────────────
+          - { goos: solaris, goarch: amd64  }
+          - { goos: illumos, goarch: amd64  }
+          # ── Plan 9 ─────────────────────────────────────────────────────────
+          - { goos: plan9,   goarch: amd64  }
+          - { goos: plan9,   goarch: 386    }
+          - { goos: plan9,   goarch: arm,   goarm: '7' }
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '~1.26.0'
+          check-latest: true
+
+      - name: Compute metadata
+        id: meta
+        shell: bash
+        run: |
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+          EXT=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then EXT=".exe"; fi
+          ARM_SUFFIX=""
+          if [ -n "${{ matrix.goarm }}" ]; then ARM_SUFFIX="-ARMv${{ matrix.goarm }}"; fi
+          BINARY="rclone-flyfile-${{ matrix.goos }}-${{ matrix.goarch }}${ARM_SUFFIX}${EXT}"
+          echo "version=${VERSION}"  >> $GITHUB_OUTPUT
+          echo "binary=${BINARY}"    >> $GITHUB_OUTPUT
+
+      - name: Build
+        env:
+          GOOS:        ${{ matrix.goos    }}
+          GOARCH:      ${{ matrix.goarch  }}
+          GOARM:       ${{ matrix.goarm   }}
+          GOMIPS:      ${{ matrix.gomips  }}
+          GOMIPS64:    ${{ matrix.gomips  }}
+          CGO_ENABLED: '0'
+        run: |
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/rclone/rclone/fs.Version=${{ steps.meta.outputs.version }}" \
+            -o "${{ steps.meta.outputs.binary }}" \
+            .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.binary }}
+          path: ${{ steps.meta.outputs.binary }}
+          retention-days: 7
+
+  release:
+    name: GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh dist/
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: FlyFile ${{ github.ref_name }}
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: false
