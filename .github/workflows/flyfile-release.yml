@@ -20,18 +20,18 @@ jobs:
       matrix:
         include:
           # ── Linux ──────────────────────────────────────────────────────────
-          - { goos: linux,   goarch: amd64   }
-          - { goos: linux,   goarch: arm64   }
-          - { goos: linux,   goarch: arm,    goarm: '7' }
-          - { goos: linux,   goarch: arm,    goarm: '6' }
-          - { goos: linux,   goarch: 386     }
-          - { goos: linux,   goarch: mips,   gomips: softfloat }
-          - { goos: linux,   goarch: mipsle, gomips: softfloat }
+          - { goos: linux,   goarch: amd64    }
+          - { goos: linux,   goarch: arm64    }
+          - { goos: linux,   goarch: arm,     goarm: '7' }
+          - { goos: linux,   goarch: arm,     goarm: '6' }
+          - { goos: linux,   goarch: 386      }
+          - { goos: linux,   goarch: mips,    gomips: softfloat }
+          - { goos: linux,   goarch: mipsle,  gomips: softfloat }
           - { goos: linux,   goarch: mips64   }
           - { goos: linux,   goarch: mips64le }
-          - { goos: linux,   goarch: s390x   }
-          - { goos: linux,   goarch: ppc64le }
-          - { goos: linux,   goarch: riscv64 }
+          - { goos: linux,   goarch: s390x    }
+          - { goos: linux,   goarch: ppc64le  }
+          - { goos: linux,   goarch: riscv64  }
           # ── macOS ──────────────────────────────────────────────────────────
           - { goos: darwin,  goarch: amd64  }
           - { goos: darwin,  goarch: arm64  }
@@ -76,22 +76,38 @@ jobs:
         id: meta
         shell: bash
         run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+          VERSION=$(git describe --tags --always 2>/dev/null || echo "dev")
+          IS_WIN=false
           EXT=""
-          if [ "${{ matrix.goos }}" = "windows" ]; then EXT=".exe"; fi
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            IS_WIN=true
+            EXT=".exe"
+          fi
           ARM_SUFFIX=""
           if [ -n "${{ matrix.goarm }}" ]; then ARM_SUFFIX="-ARMv${{ matrix.goarm }}"; fi
-          BINARY="rclone-flyfile-${{ matrix.goos }}-${{ matrix.goarch }}${ARM_SUFFIX}${EXT}"
-          echo "version=${VERSION}"  >> $GITHUB_OUTPUT
-          echo "binary=${BINARY}"    >> $GITHUB_OUTPUT
+
+          BASENAME="rclone-${{ matrix.goos }}-${{ matrix.goarch }}${ARM_SUFFIX}"
+          BINARY="${BASENAME}${EXT}"
+
+          if [ "$IS_WIN" = "true" ]; then
+            ARCHIVE="${BASENAME}.zip"
+          else
+            ARCHIVE="${BASENAME}.tar.gz"
+          fi
+
+          echo "version=${VERSION}"   >> $GITHUB_OUTPUT
+          echo "binary=${BINARY}"     >> $GITHUB_OUTPUT
+          echo "archive=${ARCHIVE}"   >> $GITHUB_OUTPUT
+          echo "basename=${BASENAME}" >> $GITHUB_OUTPUT
+          echo "is_win=${IS_WIN}"     >> $GITHUB_OUTPUT
 
       - name: Build
         env:
-          GOOS:        ${{ matrix.goos    }}
-          GOARCH:      ${{ matrix.goarch  }}
-          GOARM:       ${{ matrix.goarm   }}
-          GOMIPS:      ${{ matrix.gomips  }}
-          GOMIPS64:    ${{ matrix.gomips  }}
+          GOOS:        ${{ matrix.goos   }}
+          GOARCH:      ${{ matrix.goarch }}
+          GOARM:       ${{ matrix.goarm  }}
+          GOMIPS:      ${{ matrix.gomips }}
+          GOMIPS64:    ${{ matrix.gomips }}
           CGO_ENABLED: '0'
         run: |
           go build -trimpath \
@@ -99,18 +115,31 @@ jobs:
             -o "${{ steps.meta.outputs.binary }}" \
             .
 
+      - name: Package
+        shell: bash
+        run: |
+          BINARY="${{ steps.meta.outputs.binary }}"
+          ARCHIVE="${{ steps.meta.outputs.archive }}"
+          if [ "${{ steps.meta.outputs.is_win }}" = "true" ]; then
+            zip "$ARCHIVE" "$BINARY"
+          else
+            tar czf "$ARCHIVE" "$BINARY"
+          fi
+          sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.meta.outputs.binary }}
-          path: ${{ steps.meta.outputs.binary }}
+          name: ${{ steps.meta.outputs.archive }}
+          path: |
+            ${{ steps.meta.outputs.archive }}
+            ${{ steps.meta.outputs.archive }}.sha256
           retention-days: 7
 
   release:
     name: GitHub Release
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
@@ -123,10 +152,26 @@ jobs:
       - name: List artifacts
         run: ls -lh dist/
 
-      - name: Publish release
+      # On a v* tag → versioned stable release
+      - name: Publish versioned release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          name: FlyFile ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
           files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: false
+
+      # On master push → update rolling "latest" pre-release
+      - name: Publish latest pre-release
+        if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build (master)
+          prerelease: true
+          files: dist/*
+          fail_on_unmatched_files: false
+          body: |
+            Automatically built from the latest commit on `master`.
+            Not a stable release — use a versioned tag for production.

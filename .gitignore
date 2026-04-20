@@ -5,6 +5,16 @@ rclone.exe
 rclone-flyfile
 rclone-flyfile.exe
 rclone-flyfile-*
+rclone-linux-*
+rclone-darwin-*
+rclone-windows-*
+rclone-freebsd-*
+rclone-openbsd-*
+rclone-netbsd-*
+rclone-plan9-*
+rclone-dragonfly-*
+rclone-solaris-*
+rclone-illumos-*
 build
 /docs/public/
 /docs/.hugo_build.lock
