@@ -162,6 +162,17 @@ func (c *Client) UploadComplete(ctx context.Context, uploadID string) (*UploadCo
 	return &out, c.doJSON(ctx, http.MethodPost, "/api/v1/upload/complete", body, &out)
 }
 
+// GetFileSize returns the accumulated size of an upload from all chunks
+func (c *Client) GetFileSize(ctx context.Context, uploadID string) (int64, error) {
+	var out struct {
+		Size int64 `json:"size"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/api/internal/upload/"+uploadID+"/size", nil, &out); err != nil {
+		return 0, err
+	}
+	return out.Size, nil
+}
+
 // AbortUpload deletes an incomplete upload (status=UPLOADING) and its chunks
 func (c *Client) AbortUpload(ctx context.Context, uploadID string) error {
 	return c.doJSON(ctx, http.MethodDelete, "/api/v1/upload/"+uploadID, nil, nil)

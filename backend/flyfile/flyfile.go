@@ -376,11 +376,10 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 
 	completed = true
 
-	sz, _ := strconv.ParseInt(completeResp.File.Size, 10, 64)
 	return &Object{
 		fs:      f,
 		remote:  remote,
-		size:    sz,
+		size:    src.Size(),
 		modTime: completeResp.File.Created,
 		id:      completeResp.File.ID,
 	}, nil
