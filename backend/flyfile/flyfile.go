@@ -27,7 +27,8 @@ func init() {
 		NewFs:       NewFs,
 		Options: []fs.Option{{
 			Name:      "api_url",
-			Help:      "FlyFile API base URL (e.g. https://api.myflyfile.com)",
+			Help:      "FlyFile API base URL (e.g. https://api.flyfile.app)",
+			Default:   "https://api.flyfile.app",
 			Required:  true,
 			Sensitive: false,
 		}, {
@@ -499,13 +500,15 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 // ------------------------------------------------------------
 // Object methods
 
-func (o *Object) String() string                                       { return o.remote }
-func (o *Object) Remote() string                                       { return o.remote }
-func (o *Object) ModTime(ctx context.Context) time.Time                { return o.modTime }
-func (o *Object) Size() int64                                          { return o.size }
-func (o *Object) Fs() fs.Info                                          { return o.fs }
-func (o *Object) Hash(ctx context.Context, t hash.Type) (string, error) { return "", hash.ErrUnsupported }
-func (o *Object) Storable() bool                                        { return true }
+func (o *Object) String() string                        { return o.remote }
+func (o *Object) Remote() string                        { return o.remote }
+func (o *Object) ModTime(ctx context.Context) time.Time { return o.modTime }
+func (o *Object) Size() int64                           { return o.size }
+func (o *Object) Fs() fs.Info                           { return o.fs }
+func (o *Object) Hash(ctx context.Context, t hash.Type) (string, error) {
+	return "", hash.ErrUnsupported
+}
+func (o *Object) Storable() bool { return true }
 
 // SetModTime is a no-op — FlyFile doesn't support setting mtime
 func (o *Object) SetModTime(ctx context.Context, t time.Time) error {
@@ -534,9 +537,9 @@ func (o *Object) Remove(ctx context.Context) error {
 
 // Check interfaces
 var (
-	_ fs.Fs        = (*Fs)(nil)
-	_ fs.Mover     = (*Fs)(nil)
-	_ fs.DirMover  = (*Fs)(nil)
-	_ fs.Purger    = (*Fs)(nil)
-	_ fs.Object    = (*Object)(nil)
+	_ fs.Fs       = (*Fs)(nil)
+	_ fs.Mover    = (*Fs)(nil)
+	_ fs.DirMover = (*Fs)(nil)
+	_ fs.Purger   = (*Fs)(nil)
+	_ fs.Object   = (*Object)(nil)
 )
