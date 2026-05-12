@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	chunkSize     = 19 * 1024 * 1024 // 19 MB, aligned with the uploader's Telegram block size
-	maxConcurrent = 4                // parallel chunk uploads
+	chunkSize     = 8 * 1024 * 1024 // 8 MB, smaller requests for steadier uploader ingestion
+	maxConcurrent = 4               // parallel chunk uploads
 )
 
 type uploadChunk struct {
@@ -40,7 +40,7 @@ func (f *Fs) uploadChunked(ctx context.Context, workerURL, uploadID, fileName st
 		sem <- struct{}{} // limit both in-flight uploads and temp disk footprint
 
 		chunk, readErr := spoolChunk(src, chunkIndex)
-		if readErr != nil {
+		if readErr != nil && readErr != io.EOF {
 			<-sem
 			wg.Wait()
 			return fmt.Errorf("flyfile read chunk %d: %w", chunkIndex, readErr)
