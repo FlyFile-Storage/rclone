@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	chunkSize     = 8 * 1024 * 1024 // 8 MB, smaller requests for steadier uploader ingestion
+	chunkSize     = 1 * 1024 * 1024 // 1 MiB client chunks; uploader compacts them into Telegram-sized blocks
 	maxConcurrent = 4               // parallel chunk uploads
 )
 
