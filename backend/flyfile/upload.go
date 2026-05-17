@@ -1,30 +1,24 @@
 package flyfile
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
-	"os"
 	"strconv"
 	"sync"
 )
 
 const (
-	chunkSize     = 1 * 1024 * 1024 // 1 MiB client chunks; uploader compacts them into Telegram-sized blocks
-	maxConcurrent = 4               // parallel chunk uploads
+	chunkSize     = 10 * 1024 * 1024 // 10 MiB; uploader compacts into Telegram-sized blocks
+	maxConcurrent = 8
 )
 
-type uploadChunk struct {
-	index int
-	path  string
-	size  int64
-}
-
-// uploadChunked reads src sequentially, spools each chunk to disk, and uploads
-// those temp files in parallel. This keeps RAM bounded while still keeping the
-// network and uploader worker busy.
+// uploadChunked reads src sequentially, buffers each chunk in RAM, and uploads
+// chunks in parallel bounded by maxConcurrent. At most maxConcurrent×chunkSize
+// (~80 MiB) lives in memory at once.
 func (f *Fs) uploadChunked(ctx context.Context, workerURL, uploadID, fileName string, src io.Reader, totalSize int64) error {
 	var totalChunks int
 	if totalSize > 0 {
@@ -37,33 +31,32 @@ func (f *Fs) uploadChunked(ctx context.Context, workerURL, uploadID, fileName st
 	chunkIndex := 0
 
 	for {
-		sem <- struct{}{} // limit both in-flight uploads and temp disk footprint
+		sem <- struct{}{} // acquire slot before reading to bound in-flight memory
 
-		chunk, readErr := spoolChunk(src, chunkIndex)
+		buf, readErr := readChunk(src)
 		if readErr != nil && readErr != io.EOF {
 			<-sem
 			wg.Wait()
 			return fmt.Errorf("flyfile read chunk %d: %w", chunkIndex, readErr)
 		}
-		if chunk == nil {
+		if len(buf) == 0 {
 			<-sem
 			break
 		}
 
+		idx := chunkIndex
 		tc := totalChunks
 		wg.Add(1)
-		go func(chunk uploadChunk) {
+		go func(idx int, buf []byte) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			defer func() { _ = os.Remove(chunk.path) }()
-
-			if err := f.sendChunk(ctx, workerURL, uploadID, fileName, chunk.index, tc, chunk.path, chunk.size); err != nil {
+			if err := f.sendChunk(ctx, workerURL, uploadID, fileName, idx, tc, buf); err != nil {
 				select {
 				case errCh <- err:
 				default:
 				}
 			}
-		}(*chunk)
+		}(idx, buf)
 
 		chunkIndex++
 		if readErr == io.EOF {
@@ -83,37 +76,24 @@ func (f *Fs) uploadChunked(ctx context.Context, workerURL, uploadID, fileName st
 	return nil
 }
 
-func spoolChunk(src io.Reader, index int) (*uploadChunk, error) {
-	tmp, err := os.CreateTemp("", "rclone-flyfile-*")
-	if err != nil {
-		return nil, err
-	}
-
-	n, err := io.CopyN(tmp, src, chunkSize)
-	closeErr := tmp.Close()
-	if n == 0 {
-		_ = os.Remove(tmp.Name())
-		if err == io.EOF {
-			return nil, nil
+// readChunk reads up to chunkSize bytes from src into a new buffer.
+// Returns (buf, io.EOF) when src is exhausted (buf may be non-empty on that call).
+func readChunk(src io.Reader) ([]byte, error) {
+	buf := make([]byte, 0, chunkSize)
+	tmp := make([]byte, 32*1024)
+	for len(buf) < chunkSize {
+		n, err := src.Read(tmp)
+		if n > 0 {
+			buf = append(buf, tmp[:n]...)
 		}
 		if err != nil {
-			return nil, err
+			return buf, err
 		}
-		return nil, closeErr
 	}
-	if closeErr != nil {
-		_ = os.Remove(tmp.Name())
-		return nil, closeErr
-	}
-	if err != nil && err != io.EOF {
-		_ = os.Remove(tmp.Name())
-		return nil, err
-	}
-
-	return &uploadChunk{index: index, path: tmp.Name(), size: n}, err
+	return buf, nil
 }
 
-func (f *Fs) sendChunk(ctx context.Context, workerURL, uploadID, fileName string, index, total int, filePath string, fileSize int64) error {
+func (f *Fs) sendChunk(ctx context.Context, workerURL, uploadID, fileName string, index, total int, data []byte) error {
 	pr, pw := io.Pipe()
 	w := multipart.NewWriter(pw)
 
@@ -146,14 +126,7 @@ func (f *Fs) sendChunk(ctx context.Context, workerURL, uploadID, fileName string
 			return
 		}
 
-		file, openErr := os.Open(filePath)
-		if openErr != nil {
-			err = fmt.Errorf("flyfile chunk %d open temp: %w", index, openErr)
-			return
-		}
-		defer file.Close()
-
-		if _, copyErr := io.Copy(fw, file); copyErr != nil {
+		if _, copyErr := io.Copy(fw, bytes.NewReader(data)); copyErr != nil {
 			err = fmt.Errorf("flyfile chunk %d stream: %w", index, copyErr)
 			return
 		}
@@ -166,7 +139,7 @@ func (f *Fs) sendChunk(ctx context.Context, workerURL, uploadID, fileName string
 	}
 	req.Header.Set("Content-Type", w.FormDataContentType())
 	req.Header.Set("x-api-key", f.opt.APIKey)
-	req.ContentLength = multipartContentLength(w.Boundary(), uploadID, fileName, index, total, fileSize)
+	req.ContentLength = multipartContentLength(w.Boundary(), uploadID, fileName, index, total, int64(len(data)))
 
 	resp, err := f.httpClient.Do(req)
 	if err != nil {
