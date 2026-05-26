@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 )
 
 const (
@@ -78,11 +79,17 @@ func (f *Fs) uploadChunked(ctx context.Context, workerURL, uploadID, fileName st
 
 // readChunk reads up to chunkSize bytes from src into a new buffer.
 // Returns (buf, io.EOF) when src is exhausted (buf may be non-empty on that call).
+// Never overshoots chunkSize — the read buffer is sized to fit the remaining slot.
 func readChunk(src io.Reader) ([]byte, error) {
 	buf := make([]byte, 0, chunkSize)
 	tmp := make([]byte, 32*1024)
 	for len(buf) < chunkSize {
-		n, err := src.Read(tmp)
+		remaining := chunkSize - len(buf)
+		readSize := len(tmp)
+		if readSize > remaining {
+			readSize = remaining
+		}
+		n, err := src.Read(tmp[:readSize])
 		if n > 0 {
 			buf = append(buf, tmp[:n]...)
 		}
@@ -93,7 +100,83 @@ func readChunk(src io.Reader) ([]byte, error) {
 	return buf, nil
 }
 
+const (
+	sendChunkMaxAttempts = 5
+	sendChunkBaseDelay   = time.Second
+	sendChunkMaxDelay    = 30 * time.Second
+)
+
+// sendChunk POSTs one chunk to the uploader worker with retry on transient failures.
+// Retries are needed because:
+//   - The uploader may briefly 5xx during chunk packing or Telegram dispatch.
+//   - Nginx / load balancers may close idle connections mid-upload (EOF / connection reset).
+//   - 429 rate-limit responses need to back off, not abort.
+//
+// Without retry, a single transient error aborts the entire rclone upload — rclone
+// then re-uploads the file from scratch via its outer retry, multiplying total time.
 func (f *Fs) sendChunk(ctx context.Context, workerURL, uploadID, fileName string, index, total int, data []byte) error {
+	var lastErr error
+	for attempt := 1; attempt <= sendChunkMaxAttempts; attempt++ {
+		err := f.sendChunkOnce(ctx, workerURL, uploadID, fileName, index, total, data)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+
+		// Don't retry if context is dead.
+		if ctx.Err() != nil {
+			return fmt.Errorf("flyfile chunk %d cancelled: %w", index, ctx.Err())
+		}
+
+		// Don't retry on permanent client errors (4xx except 408/429).
+		if isPermanentHTTPError(err) {
+			return err
+		}
+
+		if attempt == sendChunkMaxAttempts {
+			break
+		}
+
+		// Exponential backoff capped at sendChunkMaxDelay.
+		delay := sendChunkBaseDelay << (attempt - 1)
+		if delay > sendChunkMaxDelay {
+			delay = sendChunkMaxDelay
+		}
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return fmt.Errorf("flyfile chunk %d cancelled during backoff: %w", index, ctx.Err())
+		}
+	}
+	return fmt.Errorf("flyfile chunk %d failed after %d attempts: %w", index, sendChunkMaxAttempts, lastErr)
+}
+
+// sendChunkHTTPError carries the HTTP status so the retry layer can decide.
+type sendChunkHTTPError struct {
+	chunk      int
+	statusCode int
+}
+
+func (e *sendChunkHTTPError) Error() string {
+	return fmt.Sprintf("flyfile chunk %d: HTTP %d", e.chunk, e.statusCode)
+}
+
+// isPermanentHTTPError reports whether err is a 4xx (other than 408/429) — these
+// won't be fixed by retrying.
+func isPermanentHTTPError(err error) bool {
+	httpErr, ok := err.(*sendChunkHTTPError)
+	if !ok {
+		return false
+	}
+	if httpErr.statusCode == 408 || httpErr.statusCode == 429 {
+		return false
+	}
+	return httpErr.statusCode >= 400 && httpErr.statusCode < 500
+}
+
+// sendChunkOnce performs a single attempt. The multipart body is re-created here
+// each call because the io.Pipe reader is single-use.
+func (f *Fs) sendChunkOnce(ctx context.Context, workerURL, uploadID, fileName string, index, total int, data []byte) error {
 	pr, pw := io.Pipe()
 	w := multipart.NewWriter(pw)
 
@@ -148,7 +231,7 @@ func (f *Fs) sendChunk(ctx context.Context, workerURL, uploadID, fileName string
 	resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("flyfile chunk %d: HTTP %d", index, resp.StatusCode)
+		return &sendChunkHTTPError{chunk: index, statusCode: resp.StatusCode}
 	}
 
 	return nil
